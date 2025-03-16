@@ -45,9 +45,8 @@ on:
         default: ghcr.io
       NAMESPACE:
         description: Target namespace to the given registry
-        required: true
+        required: false
         type: string
-        default: cloud-pi-native/console
       BUILD_AMD64:
         description: Build for amd64
         required: true
@@ -69,6 +68,21 @@ on:
         type: number
 
 jobs:
+  expose-vars:
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
+    outputs:
+      REGISTRY_NAMESPACE: ${{ steps.set-default.outputs.REGISTRY_NAMESPACE }}
+    steps:
+      - name: Set Default Repository Name
+        id: set-default
+        run: |
+          REGISTRY_NAMESPACE=${{ inputs.NAMESPACE }}
+          if [[ -z "$REGISTRY_NAMESPACE" ]]; then
+            REGISTRY_NAMESPACE="${{ github.repository }}"
+          fi
+          echo "REGISTRY_NAMESPACE=$REGISTRY_NAMESPACE" >> $GITHUB_OUTPUT
+
   matrix:
     name: Generate matrix
     runs-on: ubuntu-latest
@@ -94,6 +108,7 @@ jobs:
     runs-on: ${{ matrix.runners }}
     needs:
       - matrix
+      - expose-vars
     strategy:
       matrix:
         runners: ${{ (inputs.BUILD_AMD64 && inputs.BUILD_ARM64 && !inputs.USE_QEMU && fromJson('["ubuntu-latest", "ARM64"]')) || (inputs.BUILD_ARM64 && !inputs.USE_QEMU && fromJson('["ARM64"]')) || fromJson('["ubuntu-latest"]') }}
@@ -138,7 +153,7 @@ jobs:
           file: ${{ matrix.images.build.dockerfile }}
           provenance: false
           platforms: ${{ (inputs.BUILD_AMD64 && inputs.BUILD_ARM64 && inputs.USE_QEMU && 'linux/amd64,linux/arm64') || (inputs.BUILD_ARM64 && 'linux/arm64') || (inputs.BUILD_AMD64 && 'linux/amd64') }}
-          outputs: type=image,name=${{ inputs.REGISTRY }}/${{ inputs.NAMESPACE }}/${{ matrix.images.name }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ inputs.REGISTRY }}/${{ needs.expose-vars.outputs.REGISTRY_NAMESPACE }}/${{ matrix.images.name }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             APP_VERSION=${{ inputs.TAG || steps.short-sha.outputs.SHORT_SHA }}
           # cache-from: type=gha
@@ -174,6 +189,7 @@ jobs:
     needs:
       - matrix
       - build
+      - expose-vars
     strategy:
       matrix:
         images: ${{ fromJSON(needs.matrix.outputs.build-matrix) }}
@@ -192,7 +208,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ inputs.REGISTRY }}/${{ inputs.NAMESPACE }}/${{ matrix.images.name }}
+          images: ${{ inputs.REGISTRY }}/${{ needs.expose-vars.outputs.REGISTRY_NAMESPACE }}/${{ matrix.images.name }}
           tags: |
             type=raw,value=${{ needs.matrix.outputs.lower-branch }},enable=${{ github.head_ref != 'main' }}
             type=raw,value=${{ inputs.TAG }},enable=${{ inputs.TAG != '' }}
@@ -212,11 +228,11 @@ jobs:
         working-directory: /tmp/digests/${{ matrix.images.name }}
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ inputs.REGISTRY }}/${{ inputs.NAMESPACE }}/${{ matrix.images.name }}@sha256:%s ' *)
+            $(printf '${{ inputs.REGISTRY }}/${{ needs.expose-vars.outputs.REGISTRY_NAMESPACE }}/${{ matrix.images.name }}@sha256:%s ' *)
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ inputs.REGISTRY }}/${{ inputs.NAMESPACE }}/${{ matrix.images.name }}:${{ steps.meta.outputs.version }}
+          docker buildx imagetools inspect ${{ inputs.REGISTRY }}/${{ needs.expose-vars.outputs.REGISTRY_NAMESPACE }}/${{ matrix.images.name }}:${{ steps.meta.outputs.version }}
 
   preview:
     name: Redeploy preview app
